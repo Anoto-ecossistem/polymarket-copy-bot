@@ -1,6 +1,12 @@
-# Polymarket Copy Trading
+# Polymarket Copy Bot · Copy Trading Bot
 
-A **Polymarket** copy trading bot that watches a target wallet’s trades in real time and mirrors them on your account with configurable size, order type, and optional auto-redemption of resolved markets.
+**Polymarket copy bot** — a **polymarket copy trading bot** that watches a target wallet’s trades in real time and mirrors them on your account with configurable size, order type, and optional auto-redemption of resolved markets.
+
+> **Keywords:** Polymarket copy bot · polymarket copy trading bot · Polymarket copy trading · prediction market bot · mirror trading Polymarket
+
+## About this project
+
+This repo is a **Polymarket copy trading bot** (also searchable as *Polymarket copy bot*): it connects to Polymarket's real-time feed, follows a chosen wallet's activity, and places matching orders on your account. Use it for mirror/copy trading on Polymarket prediction markets with optional auto-redemption of resolved markets.
 
 ## Contact
 

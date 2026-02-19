@@ -8,10 +8,10 @@
     "redeem": "ts-node src/redeem.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": ["polymarket", "polymarket-copy-bot", "polymarket-copy-trading-bot", "copy-trading", "copy-trading-bot", "prediction-markets", "polymarket-bot", "mirror-trading", "clob", "trading-bot"],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Polymarket copy bot & polymarket copy trading bot — real-time mirror/copy trading on Polymarket prediction markets with configurable size and auto-redemption.",
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@types/ws": "^8.18.1",
