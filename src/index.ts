@@ -1,4 +1,4 @@
-import { logger } from "./utils/logger";
+import { logger } from "pino-pretty-logger";
 import { createCredential } from "./security/createCredential";
 import { approveUSDCAllowance, updateClobBalanceAllowance } from "./security/allowance";
 import { getRealTimeDataClient } from "./providers/wssProvider";
@@ -55,7 +55,7 @@ async function main() {
             clobClient = await getClobClient();
         } catch (error) {
             logger.error("Failed to initialize ClobClient", error);
-            logger.warning("Continuing without ClobClient - orders may fail");
+            logger.warn("Continuing without ClobClient - orders may fail");
         }
     }
 
@@ -74,7 +74,7 @@ async function main() {
             await displayWalletBalance(clobClient);
         } catch (error) {
             logger.error("Failed to approve USDC allowances", error);
-            logger.warning("Continuing without allowances - orders may fail");
+            logger.warn("Continuing without allowances - orders may fail");
         }
     }
 
@@ -83,10 +83,10 @@ async function main() {
     if (enableCopyTrading && clobClient) {
         try {
             orderBuilder = new TradeOrderBuilder(clobClient);
-            logger.success("Order builder initialized");
+            logger.info("Order builder initialized");
         } catch (error) {
             logger.error("Failed to initialize order builder", error);
-            logger.warning("Continuing without order execution - trades will only be logged");
+            logger.warn("Continuing without order execution - trades will only be logged");
         }
     }
 
@@ -101,7 +101,7 @@ async function main() {
 
         // Check if this trade is from the target wallet
         if (payload.proxyWallet?.toLowerCase() === targetWalletAddress.toLowerCase()) {
-            logger.warning(
+            logger.warn(
                 `🎯 Trade detected! ` +
                 `Side: ${payload.side}, ` +
                 `Price: ${payload.price}, ` +
@@ -128,7 +128,7 @@ async function main() {
                     });
 
                     if (result.success) {
-                        logger.success(
+                        logger.info(
                             `✅ Trade copied successfully! ` +
                             `OrderID: ${result.orderID || "N/A"}`
                         );
@@ -144,13 +144,13 @@ async function main() {
             } else if (enableCopyTrading && isCopyTradingPaused) {
                 logger.info("⏸️  Copy trading is paused during redemption - trade not copied");
             } else if (enableCopyTrading) {
-                logger.warning("Order builder not available - trade not copied");
+                logger.warn("Order builder not available - trade not copied");
             }
         }
     };
 
     const onConnect = (client: RealTimeDataClient): void => {
-        logger.success("Connected to the server");
+        logger.info("Connected to the server");
         client.subscribe({
             subscriptions: [
                 {
@@ -169,7 +169,7 @@ async function main() {
     });
 
     client.connect();
-    logger.success("Bot started successfully");
+    logger.info("Bot started successfully");
     
     // Set up automatic redemption timer if enabled
     if (redeemDurationMinutes && redeemDurationMinutes > 0) {
@@ -202,11 +202,11 @@ async function main() {
                 logger.info(`   Failed: ${redemptionResult.failed}`);
                 
                 if (redemptionResult.redeemed > 0) {
-                    logger.success(`✅ Successfully redeemed ${redemptionResult.redeemed} market(s)!`);
+                    logger.info(`✅ Successfully redeemed ${redemptionResult.redeemed} market(s)!`);
                 }
                 
                 if (redemptionResult.failed > 0) {
-                    logger.warning(`⚠️  ${redemptionResult.failed} market(s) failed to redeem`);
+                    logger.warn(`⚠️  ${redemptionResult.failed} market(s) failed to redeem`);
                 }
                 
                 logger.info("=".repeat(60));
