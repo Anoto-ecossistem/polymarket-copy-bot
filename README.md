@@ -8,6 +8,16 @@
 
 This repo is a **Polymarket copy trading bot** (also searchable as *Polymarket copy bot*): it connects to Polymarket's real-time feed, follows a chosen wallet's activity, and places matching orders on your account. Use it for mirror/copy trading on Polymarket prediction markets with optional auto-redemption of resolved markets.
 
+## Rust version
+
+``
+cd rust
+``
+
+``
+cargo run
+``
+
 ## Contact
 
 For support or suggestions:
