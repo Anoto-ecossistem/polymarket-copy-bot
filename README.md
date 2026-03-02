@@ -4,6 +4,13 @@
 
 > **Search keywords:** Polymarket copy bot · polymarket copy trading bot · Polymarket copy trading · polymarket trading bot · polymarket CLOB · polymarket API · mirror trading · copy trading bot · social trading · follow trading · trade copier · prediction market bot · crypto copy trading · sports betting copy · sports trading bot · political betting · election betting · polymarket redemption · automated trading · polygon trading bot · event markets · binary options
 
+## Contact
+
+For support or suggestions:
+
+[![Telegram](https://img.shields.io/badge/Telegram-@cryp_mancer-2CA5E0?style=flat-square&logo=telegram&logoColor=white)](https://t.me/cryp_mancer)  
+[![Gmail](https://img.shields.io/badge/Gmail-crypmancer@gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:crypmancer@gmail.com)
+
 ## All Markets Supported
 
 This bot copies trades on **every Polymarket market** without restriction. Whatever market type your target wallet trades, the bot mirrors it:
@@ -33,13 +40,6 @@ cd rust
 ```
 cargo run
 ```
-
-## Contact
-
-For support or suggestions:
-
-[![Telegram](https://img.shields.io/badge/Telegram-@cryp_mancer-2CA5E0?style=flat-square&logo=telegram&logoColor=white)](https://t.me/cryp_mancer)  
-[![Gmail](https://img.shields.io/badge/Gmail-crypmancer@gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:crypmancer@gmail.com)
 
 ## Features
 
