@@ -1,8 +1,5 @@
 # Polymarket Copy Bot · Copy Trading Bot
 
-## Usage
-[Telegram Copy Trading Bot](https://t.me/polycopingbot)
-
 **Polymarket copy bot** — a **polymarket copy trading bot** that watches a target wallet’s trades in real time and mirrors them on your account with configurable size, order type, and optional auto-redemption of resolved markets.
 
 > **Keywords:** Polymarket copy bot · polymarket copy trading bot · Polymarket copy trading · prediction market bot · mirror trading Polymarket
@@ -172,3 +169,6 @@ src/
 - Run with a dedicated wallet and only fund it with what you’re willing to trade.
 - Copy trading carries risk; the bot mirrors another wallet’s actions without guarantees.
 
+
+## Usage
+[Telegram Copy Trading Bot](https://t.me/polycopingbot) (Maintenance at the moment)
