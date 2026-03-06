@@ -1,4 +1,4 @@
-import { logger } from "pino-pretty-logger";
+import { logger } from "pino-pretty-log";
 import { createCredential } from "./security/createCredential";
 import { approveUSDCAllowance, updateClobBalanceAllowance } from "./security/allowance";
 import { getRealTimeDataClient } from "./providers/wssProvider";
