@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "ts-node dist/index.js",
+    "start": "ts-node src/index.ts",
     "dev": "ts-node src/index.ts",
-    "redeem": "ts-node dist/redeem.js",
+    "redeem": "ts-node src/redeem.ts",
     "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
