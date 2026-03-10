@@ -1,238 +1,270 @@
-import { logger } from "pino-pretty-log";
-import { createCredential } from "./security/createCredential";
-import { approveUSDCAllowance, updateClobBalanceAllowance } from "./security/allowance";
-import { getRealTimeDataClient } from "./providers/wssProvider";
-import { getClobClient } from "./providers/clobclient";
-import { TradeOrderBuilder } from "./order-builder";
-import type { Message, ConnectionStatus } from "@polymarket/real-time-data-client";
-import { RealTimeDataClient } from "@polymarket/real-time-data-client";
-import { OrderType } from "@polymarket/clob-client";
-import type { TradePayload } from "./utils/types";
-import { autoRedeemResolvedMarkets } from "./utils/redeem";
+import { config, validateConfig } from './config.js';
+import { TradeMonitor } from './monitor.js';
+import { WebSocketMonitor } from './websocket-monitor.js';
+import type { Trade } from './monitor.js';
+import { TradeExecutor } from './trader.js';
+import { PositionTracker } from './positions.js';
+import { RiskManager } from './risk-manager.js';
+import { logger } from './logger.js';
 
-async function main() {
-    logger.info("Starting the bot...");
-    
-    const targetWalletAddress = process.env.TARGET_WALLET;
-    if (!targetWalletAddress) {
-        logger.error("TARGET_WALLET environment variable is not set", new Error("TARGET_WALLET not set"));
-        process.exit(1);
+class PolymarketCopyBot {
+  private monitor: TradeMonitor;
+  private wsMonitor?: WebSocketMonitor;
+  private executor: TradeExecutor;
+  private positions: PositionTracker;
+  private risk: RiskManager;
+  private isRunning: boolean = false;
+  private processedTrades: Set<string> = new Set();
+  private botStartTime: number = 0;
+  private readonly maxProcessedTrades = 10000;
+  private stats = {
+    tradesDetected: 0,
+    tradesCopied: 0,
+    tradesFailed: 0,
+    totalVolume: 0,
+  };
+
+  constructor() {
+    this.monitor = new TradeMonitor();
+    this.executor = new TradeExecutor();
+    this.positions = new PositionTracker();
+    this.risk = new RiskManager(this.positions);
+  }
+  
+  async initialize(): Promise<void> {
+    logger.info('🤖 Polymarket Copy Trading Bot');
+    logger.info('================================');
+    logger.info(`Target wallet: ${config.targetWallet}`);
+    logger.info(`Position multiplier: ${config.trading.positionSizeMultiplier * 100}%`);
+    logger.info(`Max trade size: ${config.trading.maxTradeSize} USDC`);
+    logger.info(`Order type: ${config.trading.orderType}`);
+    logger.info(`Copy sells: ${config.trading.copySells ? 'Yes' : 'No (BUY only)'}`);
+    logger.info(`WebSocket: ${config.monitoring.useWebSocket ? 'Enabled' : 'Disabled'}`);
+    if (config.risk.maxSessionNotional > 0 || config.risk.maxPerMarketNotional > 0) {
+      logger.info(`Risk caps: session=${config.risk.maxSessionNotional || '∞'} USDC, per-market=${config.risk.maxPerMarketNotional || '∞'} USDC`);
     }
+    logger.info(`Auth mode: EOA (signature type 0)`);
+    logger.info('================================\n');
 
-    // Configuration for copying trades
-    const sizeMultiplier = parseFloat(process.env.SIZE_MULTIPLIER || "1.0");
-    const maxAmount = process.env.MAX_ORDER_AMOUNT ? parseFloat(process.env.MAX_ORDER_AMOUNT) : undefined;
-    const orderTypeStr = process.env.ORDER_TYPE?.toUpperCase();
-    const orderType = orderTypeStr === "FOK" ? OrderType.FOK : OrderType.FAK;
-    const tickSize = (process.env.TICK_SIZE as "0.1" | "0.01" | "0.001" | "0.0001") || "0.01";
-    const negRisk = process.env.NEG_RISK === "true";
-    const enableCopyTrading = process.env.ENABLE_COPY_TRADING !== "false"; // Default to true
-    
-    // Auto-redemption configuration
-    const redeemDurationMinutes = process.env.REDEEM_DURATION ? parseInt(process.env.REDEEM_DURATION, 10) : null;
-    let isCopyTradingPaused = false; // Flag to pause/resume copy trading during redemption
+    validateConfig();
 
-    logger.info(`Configuration:`);
-    logger.info(`  Target Wallet: ${targetWalletAddress}`);
-    logger.info(`  Size Multiplier: ${sizeMultiplier}x`);
-    logger.info(`  Max Order Amount: ${maxAmount || "unlimited"}`);
-    logger.info(`  Order Type: ${orderType}`);
-    logger.info(`  Tick Size: ${tickSize}`);
-    logger.info(`  Neg Risk: ${negRisk}`);
-    logger.info(`  Copy Trading: ${enableCopyTrading ? "enabled" : "disabled"}`);
-    
-    // Create credentials if they don't exist
-    const credential = await createCredential();
-    if (credential) {
-        logger.info("Credentials ready");
-    }
+    this.botStartTime = Date.now();
+    logger.info(`⏰ Bot start time: ${new Date(this.botStartTime).toISOString()}`);
+    logger.info('   (Only trades after this time will be copied)\n');
 
-    
-    // Initialize ClobClient first (needed for allowance updates)
-    let clobClient = null;
-    if (enableCopyTrading) {
-        try {
-            clobClient = await getClobClient();
-        } catch (error) {
-            logger.error("Failed to initialize ClobClient", error);
-            logger.warn("Continuing without ClobClient - orders may fail");
-        }
-    }
+    await this.monitor.initialize();
+    await this.executor.initialize();
+    await this.reconcilePositions();
 
-    // Approve USDC allowances to Polymarket contracts
-    if (enableCopyTrading && clobClient) {
-        try {
-            logger.info("Approving USDC allowances to Polymarket contracts...");
-            await approveUSDCAllowance();
-            
-            // Update CLOB API to sync with on-chain allowances
-            logger.info("Syncing allowances with CLOB API...");
-            await updateClobBalanceAllowance(clobClient);
-            
-            // Display wallet balance after setup
-            const { displayWalletBalance } = await import("./utils/balance");
-            await displayWalletBalance(clobClient);
-        } catch (error) {
-            logger.error("Failed to approve USDC allowances", error);
-            logger.warn("Continuing without allowances - orders may fail");
-        }
-    }
+    if (config.monitoring.useWebSocket) {
+      this.wsMonitor = new WebSocketMonitor();
+      try {
+        const wsAuth = this.executor.getWsAuth();
+        const channel = config.monitoring.useUserChannel ? 'user' : 'market';
+        await this.wsMonitor.initialize(this.handleNewTrade.bind(this), channel, wsAuth);
+        logger.info(`✅ WebSocket monitor initialized (${channel} channel)\n`);
 
-    // Initialize order builder if copy trading is enabled
-    let orderBuilder: TradeOrderBuilder | null = null;
-    if (enableCopyTrading && clobClient) {
-        try {
-            orderBuilder = new TradeOrderBuilder(clobClient);
-            logger.info("Order builder initialized");
-        } catch (error) {
-            logger.error("Failed to initialize order builder", error);
-            logger.warn("Continuing without order execution - trades will only be logged");
-        }
-    }
-
-    // Define callbacks
-    const onMessage = async (_client: RealTimeDataClient, message: Message): Promise<void> => {
-        const payload = message.payload as TradePayload;
-        
-        // Only process trade messages
-        if (message.topic !== "activity" || message.type !== "trades") {
-            return;
+        if (channel === 'market' && config.monitoring.wsAssetIds.length > 0) {
+          for (const assetId of config.monitoring.wsAssetIds) {
+            await this.wsMonitor.subscribeToMarket(assetId);
+          }
         }
 
-        // Check if this trade is from the target wallet
-        if (payload.proxyWallet?.toLowerCase() === targetWalletAddress.toLowerCase()) {
-            logger.warn(
-                `🎯 Trade detected! ` +
-                `Side: ${payload.side}, ` +
-                `Price: ${payload.price}, ` +
-                `Size: ${payload.size}, ` +
-                `Market: ${payload.title || payload.slug}`
-            );
-            logger.info(
-                `   Transaction: ${payload.transactionHash}, ` +
-                `Outcome: ${payload.outcome}, ` +
-                `Timestamp: ${new Date(payload.timestamp * 1000).toISOString()}`
-            );
-
-            // Copy the trade if order builder is available and copy trading is not paused
-            if (orderBuilder && enableCopyTrading && !isCopyTradingPaused) {
-                try {
-                    logger.info(`Copying trade with ${sizeMultiplier}x multiplier...`);
-                    const result = await orderBuilder.copyTrade({
-                        trade: payload,
-                        sizeMultiplier,
-                        maxAmount,
-                        orderType,
-                        tickSize,
-                        negRisk,
-                    });
-
-                    if (result.success) {
-                        logger.info(
-                            `✅ Trade copied successfully! ` +
-                            `OrderID: ${result.orderID || "N/A"}`
-                        );
-                        if (result.transactionHashes && result.transactionHashes.length > 0) {
-                            logger.info(`   Transactions: ${result.transactionHashes.join(", ")}`);
-                        }
-                    } else {
-                        logger.error(`❌ Failed to copy trade: ${result.error}`, new Error(result.error || "Unknown error"));
-                    }
-                } catch (error) {
-                    logger.error("Error copying trade", error);
-                }
-            } else if (enableCopyTrading && isCopyTradingPaused) {
-                logger.info("⏸️  Copy trading is paused during redemption - trade not copied");
-            } else if (enableCopyTrading) {
-                logger.warn("Order builder not available - trade not copied");
-            }
+        if (channel === 'user' && config.monitoring.wsMarketIds.length > 0) {
+          for (const marketId of config.monitoring.wsMarketIds) {
+            await this.wsMonitor.subscribeToCondition(marketId);
+          }
         }
-    };
-
-    const onConnect = (client: RealTimeDataClient): void => {
-        logger.info("Connected to the server");
-        client.subscribe({
-            subscriptions: [
-                {
-                    topic: "activity",
-                    type: "trades"
-                },
-            ],
-        });
-        logger.info("Subscribed to activity:trades");
-    };
-
-    // Create and connect client with callbacks
-    const client = getRealTimeDataClient({
-        onMessage,
-        onConnect,
-    });
-
-    client.connect();
-    logger.info("Bot started successfully");
-    
-    // Set up automatic redemption timer if enabled
-    if (redeemDurationMinutes && redeemDurationMinutes > 0) {
-        const redeemIntervalMs = redeemDurationMinutes * 60 * 1000; // Convert minutes to milliseconds
-        
-        logger.info(`\n⏰ Auto-redemption scheduled: Every ${redeemDurationMinutes} minutes`);
-        logger.info(`   First redemption will occur in ${redeemDurationMinutes} minutes`);
-        
-        // Function to perform redemption
-        const performRedemption = async () => {
-            try {
-                logger.info("\n" + "=".repeat(60));
-                logger.info("🔄 STARTING AUTOMATIC REDEMPTION");
-                logger.info("=".repeat(60));
-                
-                // Pause copy trading
-                isCopyTradingPaused = true;
-                logger.info("⏸️  Copy trading PAUSED");
-                
-                // Perform redemption using token-holding.json
-                logger.info("📋 Running redemption from token-holding.json...");
-                const redemptionResult = await autoRedeemResolvedMarkets({
-                    maxRetries: 3,
-                });
-                
-                logger.info("\n📊 Redemption Summary:");
-                logger.info(`   Total markets checked: ${redemptionResult.total}`);
-                logger.info(`   Resolved markets: ${redemptionResult.resolved}`);
-                logger.info(`   Successfully redeemed: ${redemptionResult.redeemed}`);
-                logger.info(`   Failed: ${redemptionResult.failed}`);
-                
-                if (redemptionResult.redeemed > 0) {
-                    logger.info(`✅ Successfully redeemed ${redemptionResult.redeemed} market(s)!`);
-                }
-                
-                if (redemptionResult.failed > 0) {
-                    logger.warn(`⚠️  ${redemptionResult.failed} market(s) failed to redeem`);
-                }
-                
-                logger.info("=".repeat(60));
-                
-            } catch (error) {
-                logger.error("Error during automatic redemption", error);
-            } finally {
-                // Resume copy trading
-                isCopyTradingPaused = false;
-                logger.info("▶️  Copy trading RESUMED");
-                logger.info("=".repeat(60) + "\n");
-            }
-        };
-        
-        // Run redemption immediately on first start (optional - you can remove this if you want to wait)
-        // Uncomment the next line if you want redemption to run immediately on bot start
-        // performRedemption();
-        
-        // Set up interval to run redemption every REDEEM_DURATION minutes
-        setInterval(performRedemption, redeemIntervalMs);
-        
-        logger.info(`   Next redemption scheduled in ${redeemDurationMinutes} minutes`);
+      } catch (error) {
+        logger.error('⚠️  WebSocket initialization failed, falling back to REST API only');
+        logger.error('   Error:', String(error));
+        this.wsMonitor = undefined;
+      }
     }
+  }
+  
+  async start(): Promise<void> {
+    this.isRunning = true;
+    const monitoringMethods = [];
+    if (this.wsMonitor) monitoringMethods.push('WebSocket');
+    monitoringMethods.push('REST API');
+
+    logger.info(`🚀 Bot started! Monitoring via: ${monitoringMethods.join(' + ')}\n`);
+
+    while (this.isRunning) {
+      try {
+        await this.monitor.pollForNewTrades(this.handleNewTrade.bind(this));
+        this.monitor.pruneProcessedHashes();
+      } catch (error) {
+        logger.error('Error in monitoring loop:', String(error));
+      }
+
+      await this.sleep(config.monitoring.pollInterval);
+    }
+  }
+  
+  private async handleNewTrade(trade: Trade): Promise<void> {
+    if (trade.timestamp && trade.timestamp < this.botStartTime) {
+      return;
+    }
+
+    const tradeKeys = this.getTradeKeys(trade);
+    if (tradeKeys.some((key) => this.processedTrades.has(key))) {
+      return;
+    }
+
+    for (const key of tradeKeys) {
+      this.processedTrades.add(key);
+    }
+    this.pruneProcessedTrades();
+    this.stats.tradesDetected++;
+
+    logger.info('\n' + '='.repeat(50));
+    logger.info(`🎯 NEW TRADE DETECTED`);
+    logger.info(`   Time: ${new Date(trade.timestamp).toISOString()}`);
+    logger.info(`   Market: ${trade.market}`);
+    logger.info(`   Side: ${trade.side} ${trade.outcome}`);
+    logger.info(`   Size: ${trade.size} USDC @ ${trade.price.toFixed(3)}`);
+    logger.info(`   Token ID: ${trade.tokenId}`);
+    logger.info('='.repeat(50));
+
+    if (trade.side === 'SELL' && !config.trading.copySells) {
+      logger.warn('⚠️  Skipping SELL trade (COPY_SELLS=false, BUY-only mode)');
+      return;
+    }
+
+    const copyNotional = this.executor.calculateCopySize(trade.size);
+
+    if (trade.side === 'SELL') {
+      const copyShares = this.executor.calculateSharesForNotional(copyNotional, trade.price);
+      const position = this.positions.getPosition(trade.tokenId);
+      if (!position || position.shares < copyShares) {
+        logger.warn(`⚠️  Skipping SELL trade: insufficient position (have ${position?.shares?.toFixed(4) ?? 0}, need ${copyShares.toFixed(4)} shares)`);
+        return;
+      }
+    }
+
+    if (this.wsMonitor) {
+      await this.wsMonitor.subscribeToMarket(trade.tokenId);
+    }
+    const riskCheck = this.risk.checkTrade(trade, copyNotional);
+    if (!riskCheck.allowed) {
+      logger.warn(`⚠️  Risk check blocked trade: ${riskCheck.reason}`);
+      return;
+    }
+
+    try {
+      const result = await this.executor.executeCopyTrade(trade, copyNotional);
+      this.risk.recordFill({
+        trade,
+        notional: result.copyNotional,
+        shares: result.copyShares,
+        price: result.price,
+        side: result.side,
+      });
+      this.stats.tradesCopied++;
+      this.stats.totalVolume += result.copyNotional;
+      logger.info(`✅ Successfully copied trade!`);
+      logger.info(`📊 Session Stats: ${this.stats.tradesCopied}/${this.stats.tradesDetected} copied, ${this.stats.tradesFailed} failed`);
+
+      if (config.run.exitAfterFirstSellCopy && result.side === 'SELL') {
+        logger.info('\n🎯 EXIT_AFTER_FIRST_SELL_COPY: First SELL copied successfully. Exiting.');
+        this.stop();
+        process.exit(0);
+      }
+    } catch (error: any) {
+      this.stats.tradesFailed++;
+      logger.error(`❌ Failed to copy trade`);
+      if (error?.message) {
+        logger.error(`   Reason: ${error.message}`);
+      }
+      logger.info(`📊 Session Stats: ${this.stats.tradesCopied}/${this.stats.tradesDetected} copied, ${this.stats.tradesFailed} failed`);
+    }
+  }
+
+  private async reconcilePositions(): Promise<void> {
+    try {
+      const positions = await this.executor.getPositions();
+      if (!positions || positions.length === 0) {
+        logger.info('🧾 Positions: none found (fresh session)');
+        return;
+      }
+
+      const { loaded, skipped } = this.positions.loadFromClobPositions(positions);
+      const totalNotional = this.positions.getTotalNotional();
+      logger.info(`🧾 Positions loaded: ${loaded} (skipped ${skipped}), total notional ≈ ${totalNotional.toFixed(2)} USDC`);
+    } catch (error: any) {
+      logger.warn(`🧾 Positions reconciliation failed: ${error.message || 'Unknown error'}`);
+    }
+  }
+  
+  stop(): void {
+    this.isRunning = false;
+
+    if (this.wsMonitor) {
+      this.wsMonitor.close();
+    }
+
+    logger.info('\n🛑 Bot stopped');
+    this.printStats();
+  }
+  
+  printStats(): void {
+    logger.info('\n📊 Session Statistics:');
+    logger.info(`   Trades detected: ${this.stats.tradesDetected}`);
+    logger.info(`   Trades copied: ${this.stats.tradesCopied}`);
+    logger.info(`   Trades failed: ${this.stats.tradesFailed}`);
+    logger.info(`   Total volume: ${this.stats.totalVolume.toFixed(2)} USDC`);
+  }
+  
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private getTradeKeys(trade: Trade): string[] {
+    const keys: string[] = [];
+
+    if (trade.txHash) {
+      keys.push(trade.txHash);
+    }
+
+    const fallbackKey = `${trade.tokenId}|${trade.side}|${trade.size}|${trade.price}|${trade.timestamp}`;
+    keys.push(fallbackKey);
+
+    return keys;
+  }
+
+  private pruneProcessedTrades(): void {
+    if (this.processedTrades.size <= this.maxProcessedTrades) {
+      return;
+    }
+
+    const entries = Array.from(this.processedTrades);
+    this.processedTrades = new Set(entries.slice(-Math.floor(this.maxProcessedTrades / 2)));
+  }
 }
 
-main().catch((error) => {
-    logger.error("Fatal error", error);
+async function main() {
+  const bot = new PolymarketCopyBot();
+  
+  process.on('SIGINT', () => {
+    logger.info('\n\nReceived SIGINT, shutting down...');
+    bot.stop();
+    process.exit(0);
+  });
+  
+  process.on('SIGTERM', () => {
+    bot.stop();
+    process.exit(0);
+  });
+  
+  try {
+    await bot.initialize();
+    await bot.start();
+  } catch (error) {
+    logger.fatal('Fatal error:', String(error));
     process.exit(1);
-});
+  }
+}
+
+main();
